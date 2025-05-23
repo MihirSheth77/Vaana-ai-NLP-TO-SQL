@@ -314,6 +314,18 @@ def create_vanna_instance(openai_api_key: str, model_path: Path) -> BeastModeVan
     
     return BeastModeVannaTrainer(config=config)
 
+def normalize_sql_output(output: Any) -> Optional[str]:
+    """Return a SQL string from Vanna output if possible."""
+    if output is None:
+        return None
+    if isinstance(output, str):
+        return output
+    if isinstance(output, (list, tuple)) and output:
+        first = output[0]
+        if isinstance(first, str):
+            return first
+    return None
+
 # In-memory user session store with persistence backup
 user_sessions = {}
 session_lock = threading.Lock()
@@ -523,8 +535,9 @@ def query(req: QueryRequest):
 
         # Generate SQL from question
         print(f"🔍 DEBUG: Generating SQL for question: {req.question}")
-        sql = vn.ask(req.question)
-        print(f"🔍 DEBUG: Generated SQL: {sql}")
+        sql_raw = vn.ask(req.question)
+        sql = normalize_sql_output(sql_raw)
+        print(f"🔍 DEBUG: Generated SQL: {sql_raw}")
 
         if sql is None:
             return QueryResponse(error="Model could not generate SQL for this question.")
@@ -580,7 +593,10 @@ def add_question(req: AddQuestionRequest):
         raise HTTPException(status_code=400, detail="BEAST MODE model not trained. Please call /train first.")
     vn = session["vn"]
     try:
-        sql = vn.ask(req.question)
+        sql_raw = vn.ask(req.question)
+        sql = normalize_sql_output(sql_raw)
+        if sql is None:
+            raise ValueError("Model could not generate SQL for this question.")
         vn.train(question=req.question, sql=sql)
         return AddQuestionResponse(message="🔥 Question added to BEAST MODE RAG vector store and saved persistently.", sql=sql)
     except Exception as e:
@@ -606,7 +622,8 @@ def agent_query(req: AgentQueryRequest):
     for attempt in range(1, req.max_attempts + 1):
         prompt = req.question if not context else f"{req.question}\n\nError encountered: {context}"
         try:
-            sql = vn.ask(prompt)
+            sql_raw = vn.ask(prompt)
+            sql = normalize_sql_output(sql_raw)
             if sql is None:
                 raise ValueError("Model returned no SQL")
             with engine.connect() as conn:
@@ -616,7 +633,8 @@ def agent_query(req: AgentQueryRequest):
                 answer = [dict(zip(columns, row)) for row in rows]
             
             analysis_prompt = f"Given the following data (columns: {columns}, rows: {answer[:5]}), draft actionable steps for a developer to implement based on the user's question: '{req.question}'."
-            analysis = vn.ask(analysis_prompt)
+            analysis_raw = vn.ask(analysis_prompt)
+            analysis = normalize_sql_output(analysis_raw) or analysis_raw
             return AgentQueryResponse(sql=sql, answer=answer, analysis=analysis, attempts=attempt)
         except Exception as e:
             context = str(e)
