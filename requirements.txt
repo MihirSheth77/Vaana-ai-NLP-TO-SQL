@@ -1,12 +1,15 @@
+# Core Vanna AI
 vanna>=0.7.9
-sqlalchemy>=2.0.0
-chromadb>=0.4.18
 
 # LLM providers
+openai>=1.1.0
 anthropic>=0.8.0
-openai>=1.1.0  # keeping for compatibility
 
-# Database drivers
+# Vector database
+chromadb>=0.4.18
+
+# Database connections
+sqlalchemy>=2.0.0
 pymysql>=1.1.0
 psycopg2-binary>=2.9.9
 pyodbc>=5.0.1
@@ -16,6 +19,19 @@ duckdb>=0.9.0
 google-cloud-bigquery>=3.11.4
 redshift-connector>=2.0.914
 
-# Other dependencies
+# Data processing
 pandas>=2.0.0
-plotly>=5.15.0 
+numpy>=1.24.0
+
+# Web framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# Frontend
+streamlit>=1.28.0
+
+# Utilities
+requests>=2.31.0
+python-multipart>=0.0.6
+pathlib>=1.0.1
