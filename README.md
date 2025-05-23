@@ -1,13 +1,16 @@
-# Vanna.AI Database Automation
+# Vanna.AI NLP-to-SQL System
 
-This tool automatically extracts the schema from any supported database and trains a Vanna.AI model to generate SQL from natural language questions.
+This project provides an end-to-end solution for training and deploying an NLP-to-SQL system using Vanna.AI, with support for large, real-world databases and modern LLMs (e.g., GPT-4o). It features a FastAPI backend, a Streamlit frontend, and robust batching for scalable training.
 
 ## Features
 
 - **Universal Database Support**: Connect to almost any SQL database (PostgreSQL, MySQL, SQL Server, Oracle, Snowflake, BigQuery, etc.)
 - **Automatic Schema Extraction**: Extracts table definitions, columns, and relationships
 - **Example Query Generation**: Creates example queries for better training
-- **Connection Saving**: Save connection details for easy reuse
+- **Batch Training**: Handles large schemas by batching DDLs and examples to avoid LLM context/token limits
+- **RAG-Ready Architecture**: Retrieval-Augmented Generation for efficient query-time context
+- **FastAPI Backend**: REST API for connect, train, query, agentic query, and RAG question addition
+- **Streamlit Frontend**: User-friendly UI for all major workflows
 - **Interactive Query Interface**: Ask questions and see the SQL + results
 
 ## Installation
@@ -18,93 +21,52 @@ pip install -r requirements.txt
 
 ## Usage
 
-The simplest way to use this tool is with the provided shell scripts:
-
+### 1. Start the Backend (FastAPI)
 ```bash
-# For training a new model
-./train_vanna.sh --db-type postgresql --host your-db-host.com --dbname your_database --username your_username
-
-# For running queries with a previously trained model
-./run_vanna.sh
+uvicorn api_vanna:app --reload
 ```
+- The API will be available at http://localhost:8000
+- See interactive docs at http://localhost:8000/docs
 
-### Advanced Command-Line Options
-
+### 2. Start the Frontend (Streamlit)
 ```bash
-python train_vanna.py --db-type postgresql --host your-db-host.com --dbname your_database --username your_username
+streamlit run frontend/main.py
 ```
+- The UI will open in your browser.
+
+## API Endpoints
+- `POST /connect` — Connect to a database
+- `POST /train` — Train the NLP-to-SQL model (with batching for large schemas)
+- `POST /query` — Run a natural language query (returns SQL and/or results)
+- `POST /agent-query` — Agentic, iterative query refinement with error analysis
+- `POST /add-question` — Add a question to the RAG vector store
 
 ## Supported Database Types
+- `postgresql`, `mysql`, `mssql`, `oracle`, `sqlite`, `snowflake`, `bigquery`, `redshift`, `duckdb`
 
-- `postgresql` - PostgreSQL 
-- `mysql` - MySQL databases
-- `mssql` - Microsoft SQL Server
-- `oracle` - Oracle Database
-- `sqlite` - SQLite
-- `snowflake` - Snowflake
-- `bigquery` - Google BigQuery
-- `redshift` - Amazon Redshift
-- `duckdb` - DuckDB
+## OpenAI API Key & Model
+- You must provide a valid OpenAI API key for training and querying.
+- The default model is `gpt-4o` (or `gpt-4o-high` if supported by your provider).
+- Make sure your API key has sufficient quota ([check here](https://platform.openai.com/usage)).
 
-## Parameters
+## Example Workflow
+1. **Connect to your database** via the frontend or `/connect` endpoint.
+2. **Train the model** with your OpenAI API key (handles large schemas via batching).
+3. **Ask questions** in natural language and get SQL or results.
+4. **Use agentic query** for iterative, error-aware SQL refinement.
+5. **Add custom questions** to the RAG vector store for improved retrieval.
 
-### Basic Connection Parameters
-- `--connection-string`: Full database connection string (if provided, overrides other connection parameters)
-- `--connection-file`: Load connection details from a saved JSON file
-- `--save-connection`: Save connection details to a file for reuse
-- `--connection-name`: Name for the saved connection (default: db_connection.json)
+## Troubleshooting
 
-### Standard Database Parameters
-- `--db-type`: Database type (required if not using connection string or file)
-- `--host`: Database host address
-- `--port`: Database port (optional, defaults based on db-type)
-- `--dbname`: Database name
-- `--username`: Database username
-- `--password`: Database password (if not provided, will prompt)
-
-### Specialized Database Parameters
-- `--project-id`: Project ID (for BigQuery)
-- `--credentials-file`: Path to credentials file (for BigQuery, etc.)
-
-### AI Parameters
-- `--openai-api-key`: OpenAI API key (defaults to OPENAI_API_KEY env var)
-- `--openai-model`: OpenAI model to use (default: gpt-4-turbo-preview)
-
-## Example Commands
-
-```bash
-# PostgreSQL
-./train_vanna.sh --db-type postgresql --host pg-db.example.com --dbname customers --username admin
-
-# MySQL
-./train_vanna.sh --db-type mysql --host mysql-db.example.com --dbname orders --username admin --port 3306
-
-# SQLite
-./train_vanna.sh --db-type sqlite --dbname ./my_local_database.db
-
-# Snowflake
-./train_vanna.sh --db-type snowflake --host myorg-account.snowflakecomputing.com --dbname ANALYTICS --username snowuser
-
-# BigQuery
-./train_vanna.sh --db-type bigquery --project-id my-gcp-project --dbname mydataset --credentials-file ./key.json
-
-# Using a saved connection
-./train_vanna.sh --connection-file my_saved_connection.json
-```
-
-## Workflow
-
-After training, you can ask questions like:
-
-- "Show me the top 10 customers by revenue"
-- "What was the total sales in the last month?"
-- "How many orders were placed last week?"
-
-The script will generate SQL and give you the option to execute it directly.
+- **Large schema errors:** The system now batches DDLs and examples to avoid context/token limits. If you still hit errors, try reducing batch size in `api_vanna.py` (`BATCH_SIZE`).
+- **Model errors:** Ensure your OpenAI API key has access to the specified model (`gpt-4o`, `gpt-4o-high`, etc.).
+- **General FastAPI errors:** See [FastAPI error handling docs](https://fastapi.tiangolo.com/tutorial/handling-errors/).
 
 ## Notes
+- Your database contents are never sent to the LLM—only schema and example queries are used for training.
+- Vector database storage is handled through ChromaDB by default.
+- The system is designed for extensibility: you can add new endpoints, models, or RAG strategies as needed.
 
-- The extracted schema information is used for training the model locally
-- Your database contents are never sent to the LLM
-- The script supports automatic generation of example queries based on your schema
-- Vector database storage is handled through ChromaDB by default 
+---
+
+For more details, see the code and comments in `api_vanna.py` and `frontend/main.py`. 
