@@ -517,7 +517,7 @@ def query(req: QueryRequest):
             return QueryResponse(error="Model not loaded. Please reconnect and provide OpenAI API key to reload trained model.")
         
         vn = session["vn"]
-        
+
         if session.get("engine") is None:
             return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
 
@@ -533,6 +533,7 @@ def query(req: QueryRequest):
 
         if session.get("engine") is None:
             return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
+
 
         
         if req.return_sql_only:
