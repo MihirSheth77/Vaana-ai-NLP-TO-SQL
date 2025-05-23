@@ -530,7 +530,10 @@ def query(req: QueryRequest):
         
         vn = session["vn"]
 
+        engine = session.get("engine")
+        if engine is None and not req.return_sql_only:
         if session.get("engine") is None:
+
             return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
 
         # Generate SQL from question
@@ -538,6 +541,9 @@ def query(req: QueryRequest):
         sql = vn.ask(req.question)
         print(f"🔍 DEBUG: Generated SQL: {sql}")
 
+        if sql is None:
+            return QueryResponse(error="Model could not generate SQL for this question.")
+        
         sql_raw = vn.ask(req.question)
         sql = normalize_sql_output(sql_raw)
         print(f"🔍 DEBUG: Generated SQL: {sql_raw}")
@@ -560,7 +566,6 @@ def query(req: QueryRequest):
             return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
         
         # Run SQL and return results
-        engine = session["engine"]
         with engine.connect() as conn:
             result = conn.execute(sqlalchemy.text(sql))
             rows = result.fetchall()
@@ -633,6 +638,7 @@ def agent_query(req: AgentQueryRequest):
 
             sql_raw = vn.ask(prompt)
             sql = normalize_sql_output(sql_raw)
+
             if sql is None:
                 raise ValueError("Model returned no SQL")
             with engine.connect() as conn:
