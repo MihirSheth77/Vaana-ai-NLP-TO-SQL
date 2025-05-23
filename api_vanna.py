@@ -518,6 +518,9 @@ def query(req: QueryRequest):
         
         vn = session["vn"]
         
+        if session.get("engine") is None:
+            return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
+
         # Generate SQL from question
         print(f"🔍 DEBUG: Generating SQL for question: {req.question}")
         sql = vn.ask(req.question)
@@ -526,8 +529,11 @@ def query(req: QueryRequest):
         if sql is None:
             return QueryResponse(error="Model could not generate SQL for this question.")
 
+
+
         if session.get("engine") is None:
             return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
+
         
         if req.return_sql_only:
             return QueryResponse(sql=sql)
