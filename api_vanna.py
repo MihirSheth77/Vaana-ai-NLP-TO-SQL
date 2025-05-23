@@ -522,6 +522,12 @@ def query(req: QueryRequest):
         print(f"🔍 DEBUG: Generating SQL for question: {req.question}")
         sql = vn.ask(req.question)
         print(f"🔍 DEBUG: Generated SQL: {sql}")
+
+        if sql is None:
+            return QueryResponse(error="Model could not generate SQL for this question.")
+
+        if session.get("engine") is None:
+            return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
         
         if req.return_sql_only:
             return QueryResponse(sql=sql)
@@ -581,7 +587,9 @@ def agent_query(req: AgentQueryRequest):
         return AgentQueryResponse(error="BEAST MODE model not trained. Please call /train first.", attempts=0)
     
     vn = session["vn"]
-    engine = session["engine"]
+    engine = session.get("engine")
+    if engine is None:
+        return AgentQueryResponse(error="If you want to run the SQL query, connect to a database first.", attempts=0)
     context = ""
     sql = None
     answer = None
@@ -592,6 +600,8 @@ def agent_query(req: AgentQueryRequest):
         prompt = req.question if not context else f"{req.question}\n\nError encountered: {context}"
         try:
             sql = vn.ask(prompt)
+            if sql is None:
+                raise ValueError("Model returned no SQL")
             with engine.connect() as conn:
                 result = conn.execute(sqlalchemy.text(sql))
                 rows = result.fetchall()
