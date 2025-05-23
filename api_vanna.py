@@ -535,12 +535,17 @@ def query(req: QueryRequest):
 
         # Generate SQL from question
         print(f"🔍 DEBUG: Generating SQL for question: {req.question}")
+        sql = vn.ask(req.question)
+        print(f"🔍 DEBUG: Generated SQL: {sql}")
+
         sql_raw = vn.ask(req.question)
         sql = normalize_sql_output(sql_raw)
         print(f"🔍 DEBUG: Generated SQL: {sql_raw}")
 
+
         if sql is None:
             return QueryResponse(error="Model could not generate SQL for this question.")
+
 
 
 
@@ -548,9 +553,11 @@ def query(req: QueryRequest):
             return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
 
 
-        
         if req.return_sql_only:
             return QueryResponse(sql=sql)
+
+        if session.get("engine") is None:
+            return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
         
         # Run SQL and return results
         engine = session["engine"]
@@ -622,6 +629,8 @@ def agent_query(req: AgentQueryRequest):
     for attempt in range(1, req.max_attempts + 1):
         prompt = req.question if not context else f"{req.question}\n\nError encountered: {context}"
         try:
+            sql = vn.ask(prompt)
+
             sql_raw = vn.ask(prompt)
             sql = normalize_sql_output(sql_raw)
             if sql is None:
