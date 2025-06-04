@@ -35,3 +35,11 @@ streamlit>=1.28.0
 requests>=2.31.0
 python-multipart>=0.0.6
 pathlib>=1.0.1
+
+# Added from the code block
+plotly
+kaleido
+tabulate
+flask
+flask-sock
+openai-agents

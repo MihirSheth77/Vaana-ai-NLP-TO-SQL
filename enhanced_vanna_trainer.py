@@ -632,5 +632,38 @@ class BeastModeVannaTrainer(ChromaDB_VectorStore, OpenAI_Chat):
                 else:
                     data_dict = training_data if isinstance(training_data, list) else []
                 
-                # Look for our business context examples
-                customer_examples = [item for item in data_dict if
+                # Analyze content types
+                content_types = {}
+                business_keywords = ['revenue', 'client', 'customer', 'sales', 'performance', 'campaign']
+                business_examples = 0
+                
+                for item in data_dict:
+                    if isinstance(item, dict):
+                        # Count content types
+                        if 'content' in item:
+                            content = str(item['content']).lower()
+                            if any(keyword in content for keyword in business_keywords):
+                                business_examples += 1
+                        
+                        # Track training content types
+                        item_type = item.get('training_data_type', 'unknown')
+                        content_types[item_type] = content_types.get(item_type, 0) + 1
+                
+                # Report verification results
+                print(f"📊 Training data breakdown:")
+                for content_type, count in content_types.items():
+                    print(f"   {content_type}: {count} examples")
+                
+                if business_examples > 0:
+                    print(f"🏢 Business context examples: {business_examples}")
+                    print("✅ BEAST MODE training data verification complete!")
+                else:
+                    print("⚠️  No business context detected in training data")
+                    
+            else:
+                print("❌ No training data found in ChromaDB")
+                
+        except Exception as e:
+            print(f"⚠️  Could not verify training data: {e}")
+            print("   This is normal for first-time training or if ChromaDB is not yet initialized")
+        

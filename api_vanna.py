@@ -15,6 +15,14 @@ from sqlalchemy import inspect, text
 # Import the BEAST MODE trainer
 from beast_mode_trainer import BeastModeVannaTrainer, generate_model_id
 
+# Import OpenAI Agents SDK
+try:
+    from agents import Agent, Runner
+    AGENTS_SDK_AVAILABLE = True
+except ImportError:
+    AGENTS_SDK_AVAILABLE = False
+    print("⚠️  OpenAI Agents SDK not available. Install with: pip install openai-agents")
+
 app = FastAPI(title="BEAST MODE Vanna NLP-to-SQL API", description="🔥 BEAST MODE API for NLP-to-SQL with 500+ training examples", version="2.0.0")
 
 # Create persistent storage directories
@@ -315,15 +323,46 @@ def create_vanna_instance(openai_api_key: str, model_path: Path) -> BeastModeVan
     return BeastModeVannaTrainer(config=config)
 
 def normalize_sql_output(output: Any) -> Optional[str]:
-    """Return a SQL string from Vanna output if possible."""
+    """Simple extraction using modern LLM structured output"""
     if output is None:
         return None
+    
     if isinstance(output, str):
-        return output
+        # Modern approach: extract from structured tags
+        if '<sql>' in output and '</sql>' in output:
+            try:
+                sql_content = output.split('<sql>')[1].split('</sql>')[0].strip()
+                if sql_content and sql_content != 'NO_SQL_POSSIBLE':
+                    return sql_content
+            except IndexError:
+                pass
+        
+        # Legacy fallback for existing trained models
+        if "Extracted SQL: " in output:
+            return output.split("Extracted SQL: ", 1)[1].strip()
+        
+        # Extract SQL from markdown code blocks
+        import re
+        sql_match = re.search(r'```sql\s*\n(.*?)\n```', output, re.DOTALL | re.IGNORECASE)
+        if sql_match:
+            return sql_match.group(1).strip()
+        
+        # Fallback: if it's already clean SQL, return it
+        if any(keyword in output.upper() for keyword in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER']):
+            # Find the line that starts with SQL
+            lines = output.split('\n')
+            for line in lines:
+                line = line.strip()
+                if any(keyword in line.upper() for keyword in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER']):
+                    return line
+        
+        return output.strip()
+    
     if isinstance(output, (list, tuple)) and output:
         first = output[0]
         if isinstance(first, str):
-            return first
+            return normalize_sql_output(first)
+    
     return None
 
 # In-memory user session store with persistence backup
@@ -412,6 +451,7 @@ def get_vanna_session(session_id: str) -> Dict[str, Any]:
 @app.post("/connect", response_model=ConnectResponse)
 def connect(req: ConnectRequest):
     session_id = str(uuid.uuid4())
+    print(f"[DEBUG] /connect called. New session_id: {session_id}")
     
     # Build args object for get_connection_string
     class Args: pass
@@ -452,6 +492,7 @@ def connect(req: ConnectRequest):
             "trained": is_trained,
             "connection_params": connection_params
         }
+        print(f"[DEBUG] /connect: user_sessions keys after connect: {list(user_sessions.keys())}")
     
     status_message = f"🔥 Connection established. Model {'already trained' if is_trained else 'ready for BEAST MODE training'}."
     return ConnectResponse(session_id=session_id, message=status_message)
@@ -461,6 +502,12 @@ BATCH_SIZE = 50  # Increased for BEAST MODE
 @app.post("/train", response_model=TrainResponse)
 def train(req: TrainRequest):
     try:
+        # Debug: Print the received API key (mask all but last 4 chars)
+        masked_key = req.openai_api_key[:6] + "..." + req.openai_api_key[-4:] if req.openai_api_key else None
+        print(f"[DEBUG] Received OpenAI API key: {masked_key}")
+        # Strip whitespace from API key
+        req.openai_api_key = req.openai_api_key.strip() if req.openai_api_key else req.openai_api_key
+        print(f"[DEBUG] Stripped OpenAI API key: {masked_key}")
         print(f"🔥 BEAST MODE: Training started for session {req.session_id}")
         session = get_vanna_session(req.session_id)
         print(f"🔥 BEAST MODE: Session retrieved successfully")
@@ -520,8 +567,12 @@ def train(req: TrainRequest):
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
+    print(f"[DEBUG] /query called. session_id from request: {req.session_id}")
+    print(f"[DEBUG] /query: user_sessions keys at query: {list(user_sessions.keys())}")
     try:
         session = get_vanna_session(req.session_id)
+        print(f"[DEBUG] Session at query: {session}")
+        print(f"[DEBUG] Engine at query: {session.get('engine')}")
         
         if not session.get("vn"):
             if not session.get("trained"):
@@ -529,52 +580,49 @@ def query(req: QueryRequest):
             return QueryResponse(error="Model not loaded. Please reconnect and provide OpenAI API key to reload trained model.")
         
         vn = session["vn"]
-
         engine = session.get("engine")
-        if engine is None and not req.return_sql_only:
-        if session.get("engine") is None:
-
-            return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
-
+        
         # Generate SQL from question
         print(f"🔍 DEBUG: Generating SQL for question: {req.question}")
-        sql = vn.ask(req.question)
+        sql = vn.ask(req.question)  # Use directly without normalize_sql_output
         print(f"🔍 DEBUG: Generated SQL: {sql}")
-
-        if sql is None:
+        
+        if sql is None or not sql.strip():
             return QueryResponse(error="Model could not generate SQL for this question.")
         
-        sql_raw = vn.ask(req.question)
-        sql = normalize_sql_output(sql_raw)
-        print(f"🔍 DEBUG: Generated SQL: {sql_raw}")
-
-
-        if sql is None:
-            return QueryResponse(error="Model could not generate SQL for this question.")
-
-
-
-
-        if session.get("engine") is None:
-            return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
-
-
+        # Return SQL only if requested
         if req.return_sql_only:
             return QueryResponse(sql=sql)
-
-        if session.get("engine") is None:
-            return QueryResponse(error="If you want to run the SQL query, connect to a database first.")
         
-        # Run SQL and return results
-        with engine.connect() as conn:
-            result = conn.execute(sqlalchemy.text(sql))
-            rows = result.fetchall()
-            columns = list(result.keys())  # Convert to list
-            answer = [dict(zip(columns, row)) for row in rows]
+        # Check if we have database connection for execution
+        if engine is None:
+            return QueryResponse(error="Database connection not available. Please reconnect to database.")
         
-        print(f"🔍 DEBUG: Query executed successfully, {len(answer)} rows returned")
-        return QueryResponse(sql=sql, answer=answer)
-        
+        # Execute SQL and return results
+        try:
+            print(f"🔍 DEBUG: Executing SQL on database...")
+            with engine.connect() as conn:
+                result = conn.execute(sqlalchemy.text(sql))
+                rows = result.fetchall()
+                columns = list(result.keys())  # Convert to list
+                answer = [dict(zip(columns, row)) for row in rows]
+            
+            print(f"🔍 DEBUG: Query executed successfully, {len(answer)} rows returned")
+            return QueryResponse(sql=sql, answer=answer)
+            
+        except Exception as sql_error:
+            # Log the ACTUAL SQL execution error
+            print(f"❌ SQL EXECUTION ERROR: {sql_error}")
+            print(f"❌ Failed SQL: {sql}")
+            import traceback
+            traceback.print_exc()
+            
+            # Return the real error to help debugging
+            return QueryResponse(
+                sql=sql,
+                error=f"SQL execution failed: {str(sql_error)}"
+            )
+            
     except Exception as e:
         print(f"❌ ERROR in query endpoint: {e}")
         import traceback
@@ -584,6 +632,12 @@ def query(req: QueryRequest):
 @app.post("/reload-model")
 def reload_model(req: TrainRequest):
     """Reload a trained BEAST MODE model from persistent storage"""
+    # Debug: Print the received API key (mask all but last 4 chars)
+    masked_key = req.openai_api_key[:6] + "..." + req.openai_api_key[-4:] if req.openai_api_key else None
+    print(f"[DEBUG] Received OpenAI API key: {masked_key}")
+    # Strip whitespace from API key
+    req.openai_api_key = req.openai_api_key.strip() if req.openai_api_key else req.openai_api_key
+    print(f"[DEBUG] Stripped OpenAI API key: {masked_key}")
     session = get_vanna_session(req.session_id)
     model_path = session["model_path"]
     
@@ -616,46 +670,188 @@ def add_question(req: AddQuestionRequest):
 
 @app.post("/agent-query", response_model=AgentQueryResponse)
 def agent_query(req: AgentQueryRequest):
-    """🔥 BEAST MODE Agentic, iterative query refinement with error analysis."""
+    print(f"[DEBUG] /agent-query called. session_id from request: {req.session_id}")
+    print(f"[DEBUG] /agent-query: user_sessions keys at agent-query: {list(user_sessions.keys())}")
     session = get_vanna_session(req.session_id)
+    print(f"[DEBUG] Session at agent-query: {session}")
+    print(f"[DEBUG] Engine at agent-query: {session.get('engine')}")
+    
     if not session.get("trained") or not session.get("vn"):
         return AgentQueryResponse(error="BEAST MODE model not trained. Please call /train first.", attempts=0)
     
     vn = session["vn"]
     engine = session.get("engine")
-    if engine is None:
-        return AgentQueryResponse(error="If you want to run the SQL query, connect to a database first.", attempts=0)
-    context = ""
-    sql = None
-    answer = None
-    analysis = None
-    last_error = None
+    
+    # Get database schema for context
+    schema_info = ""
+    if engine:
+        try:
+            from sqlalchemy import inspect
+            inspector = inspect(engine)
+            tables = inspector.get_table_names()
+            schema_parts = []
+            for table in tables[:10]:  # Limit to avoid token overflow
+                columns = inspector.get_columns(table)
+                col_names = [col['name'] for col in columns]
+                schema_parts.append(f"Table {table}: {', '.join(col_names)}")
+            schema_info = "\n".join(schema_parts)
+        except Exception as e:
+            print(f"Could not extract schema: {e}")
+            schema_info = "Schema information unavailable"
+    
+    conversation_history = []
     
     for attempt in range(1, req.max_attempts + 1):
-        prompt = req.question if not context else f"{req.question}\n\nError encountered: {context}"
         try:
-            sql = vn.ask(prompt)
-
-            sql_raw = vn.ask(prompt)
-            sql = normalize_sql_output(sql_raw)
-
-            if sql is None:
-                raise ValueError("Model returned no SQL")
-            with engine.connect() as conn:
-                result = conn.execute(sqlalchemy.text(sql))
-                rows = result.fetchall()
-                columns = result.keys()
-                answer = [dict(zip(columns, row)) for row in rows]
+            print(f"🔄 Attempt {attempt}/{req.max_attempts}")
             
-            analysis_prompt = f"Given the following data (columns: {columns}, rows: {answer[:5]}), draft actionable steps for a developer to implement based on the user's question: '{req.question}'."
-            analysis_raw = vn.ask(analysis_prompt)
-            analysis = normalize_sql_output(analysis_raw) or analysis_raw
+            # Build iterative prompt based on previous attempts
+            if attempt == 1:
+                # Initial prompt
+                system_prompt = f"""You are an expert SQL query generator. Generate ONLY valid SQL queries based on the user's natural language request.
+
+Database Schema:
+{schema_info}
+
+Rules:
+1. Return ONLY the SQL query, no explanations
+2. Use proper PostgreSQL syntax
+3. Always use proper table and column names from the schema
+4. Handle NULL values appropriately
+5. Use appropriate JOINs when needed
+6. Include proper WHERE clauses for filtering
+7. Use aggregation functions correctly (SUM, COUNT, AVG, etc.)
+
+Return only the SQL query without any markdown formatting or additional text."""
+
+                user_prompt = f"Generate a SQL query for: {req.question}"
+                
+            else:
+                # Iterative refinement prompt with error feedback
+                error_context = conversation_history[-1] if conversation_history else ""
+                
+                system_prompt = f"""You are an expert SQL query generator. The previous SQL query failed with an error. 
+Please analyze the error and generate a corrected SQL query.
+
+Database Schema:
+{schema_info}
+
+Previous attempt failed with this error:
+{error_context}
+
+CRITICAL RULES:
+1. Return ONLY the complete, corrected SQL query
+2. If the error shows "syntax error at end of input", ensure you complete the entire query structure
+3. For window functions, always close all parentheses: ) AS column_name
+4. For CTEs, ensure all parts are complete: SELECT ... FROM cte_name
+5. Always end with a semicolon
+6. Use proper PostgreSQL syntax
+7. Fix the specific syntax error mentioned above
+
+The previous query appears to be truncated. Generate the COMPLETE corrected query."""
+
+                user_prompt = f"Original question: {req.question}\n\nPlease provide a corrected SQL query that fixes the previous error."
+            
+            # Use OpenAI SDK directly for better control
+            import openai
+            client = openai.OpenAI(api_key=vn.config.get('api_key'))
+            
+            response = client.chat.completions.create(
+                model=vn.config.get('model', 'gpt-4o'),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,  # Low temperature for more consistent SQL generation
+                max_tokens=1500,  # Increased from 500 to handle complex queries
+                top_p=0.9
+            )
+            
+            # Extract SQL from response
+            sql = response.choices[0].message.content.strip()
+            
+            # Clean up the SQL (remove markdown if present)
+            import re
+            if '```sql' in sql.lower():
+                sql_match = re.search(r'```sql\s*\n(.*?)\n```', sql, re.DOTALL | re.IGNORECASE)
+                if sql_match:
+                    sql = sql_match.group(1).strip()
+            elif '```' in sql:
+                sql_match = re.search(r'```\s*\n(.*?)\n```', sql, re.DOTALL)
+                if sql_match:
+                    sql = sql_match.group(1).strip()
+            
+            # Ensure SQL ends with semicolon if it's a complete query
+            if sql and not sql.strip().endswith(';') and any(sql.upper().strip().startswith(kw) for kw in ['SELECT', 'INSERT', 'UPDATE', 'DELETE']):
+                sql = sql.strip() + ';'
+            
+            print(f"🔍 DEBUG: Attempt {attempt} - Generated SQL: {sql}")
+            
+            if not sql or not sql.strip():
+                error_msg = f"No SQL generated on attempt {attempt}"
+                print(f"❌ {error_msg}")
+                conversation_history.append(f"Attempt {attempt}: {error_msg}")
+                continue
+            
+            # Try to execute the SQL if we have a database connection
+            answer = None
+            analysis = f"Generated SQL query on attempt {attempt}"
+            
+            if engine:
+                try:
+                    print(f"🔍 DEBUG: Attempting to execute SQL: {sql}")
+                    with engine.connect() as conn:
+                        result = conn.execute(sqlalchemy.text(sql))
+                        rows = result.fetchall()
+                        columns = list(result.keys())
+                        answer = [dict(zip(columns, row)) for row in rows]
+                    
+                    analysis = f"✅ Successfully executed SQL query on attempt {attempt}. Retrieved {len(answer)} rows."
+                    print(f"✅ Success on attempt {attempt}: {len(answer)} rows returned")
+                    
+                    # Success! Return the result
+                    return AgentQueryResponse(sql=sql, answer=answer, analysis=analysis, attempts=attempt)
+                    
+                except Exception as sql_error:
+                    error_msg = str(sql_error)
+                    print(f"❌ SQL execution error on attempt {attempt}: {error_msg}")
+                    
+                    # Add detailed error context for next iteration
+                    error_context = f"""
+SQL Query: {sql}
+Error: {error_msg}
+Error Type: {type(sql_error).__name__}
+Query Length: {len(sql)} characters
+Issue: {"Query appears truncated - missing closing parentheses or SELECT clause" if "syntax error at end of input" in error_msg else "SQL execution error"}
+"""
+                    conversation_history.append(error_context)
+                    analysis = f"Attempt {attempt}: SQL execution failed - {error_msg}"
+                    
+                    # If this is the last attempt, return with error
+                    if attempt >= req.max_attempts:
+                        return AgentQueryResponse(
+                            sql=sql, 
+                            error=f"SQL execution failed after {req.max_attempts} attempts. Final error: {error_msg}", 
+                            analysis=analysis, 
+                            attempts=attempt
+                        )
+                    
+                    # Continue to next iteration with error feedback
+                    continue
+            else:
+                # No database connection, but SQL was generated successfully
+                analysis = f"Generated SQL on attempt {attempt}, but no database connection available for execution"
             return AgentQueryResponse(sql=sql, answer=answer, analysis=analysis, attempts=attempt)
+            
         except Exception as e:
-            context = str(e)
-            last_error = context
+            error_msg = str(e)
+            print(f"❌ Error on attempt {attempt}: {error_msg}")
+            conversation_history.append(f"Attempt {attempt} - Generation Error: {error_msg}")
+            
+            if attempt >= req.max_attempts:
+                return AgentQueryResponse(error=f"Failed after {req.max_attempts} attempts: {error_msg}", attempts=attempt)
     
-    return AgentQueryResponse(error=f"🔥 BEAST MODE failed after {req.max_attempts} attempts. Last error: {last_error}", attempts=req.max_attempts)
+    return AgentQueryResponse(error=f"Failed to generate valid SQL after {req.max_attempts} attempts", attempts=req.max_attempts)
 
 @app.get("/training-status/{session_id}")
 def get_training_status(session_id: str):
@@ -757,21 +953,243 @@ def list_sessions():
 
 @app.get("/")
 def root():
+    agents_status = "✅ Available" if AGENTS_SDK_AVAILABLE else "❌ Not installed (pip install openai-agents)"
+    
     return {
-        "message": "🔥 Welcome to the BEAST MODE Vanna NLP-to-SQL API with 500+ Training Examples! See /docs for OpenAPI documentation.",
+        "message": "🔥 Welcome to the BEAST MODE Vanna NLP-to-SQL API with OpenAI Agents SDK Integration!",
         "beast_mode": True,
+        "agents_sdk": agents_status,
+        "endpoints": {
+            "legacy_agent": "/agent-query (manual retry loop)",
+            "modern_agent": "/agents/query (OpenAI Agents SDK)", 
+            "simple_query": "/query (single attempt)"
+        },
         "features": [
             "🔥 BEAST MODE training with 500+ examples",
+            "🤖 OpenAI Agents SDK integration",
             "📊 Advanced query patterns (JOINs, subqueries, window functions)",
             "💾 Persistent model training data",
             "🔄 Automatic model reloading", 
             "📋 Session management",
             "🗂️ ChromaDB vector storage",
             "🌐 Multi-database support",
-            "🤖 Agentic query refinement",
-            "📚 Business logic integration"
+            "🔧 Built-in SQL execution tools",
+            "📚 Business logic integration",
+            "👁️ Agent tracing and visualization"
         ],
         "training_examples": "500+",
         "accuracy": "BEAST MODE",
         "version": "2.0.0"
     }
+
+@app.get("/list-models")
+def list_models():
+    """List all available trained models"""
+    models = []
+    try:
+        for model_dir in MODELS_DIR.glob("model_*"):
+            if model_dir.is_dir():
+                model_id = model_dir.name.replace("model_", "")
+                is_trained = check_if_model_trained(model_dir)
+                models.append({
+                    "model_id": model_id,
+                    "path": str(model_dir),
+                    "trained": is_trained
+                })
+        return {"models": models}
+    except Exception as e:
+        return {"models": [], "error": str(e)}
+
+# ------------------- Agent Tools for OpenAI Agents SDK ------------------- #
+
+def create_sql_execution_tool(engine, schema_info: str):
+    """Create a SQL execution tool for the Agents SDK"""
+    def execute_sql(sql_query: str) -> Dict[str, Any]:
+        """
+        Execute a SQL query and return the results.
+        
+        Args:
+            sql_query: The SQL query to execute
+            
+        Returns:
+            Dictionary with success status, results, or error message
+        """
+        try:
+            if not sql_query or not sql_query.strip():
+                return {"success": False, "error": "Empty SQL query provided"}
+            
+            print(f"🔍 Executing SQL: {sql_query}")
+            with engine.connect() as conn:
+                result = conn.execute(sqlalchemy.text(sql_query))
+                rows = result.fetchall()
+                columns = list(result.keys())
+                data = [dict(zip(columns, row)) for row in rows]
+            
+            return {
+                "success": True,
+                "row_count": len(data),
+                "data": data[:10],  # Limit to first 10 rows for response size
+                "total_rows": len(data)
+            }
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ SQL execution error: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "error_type": type(e).__name__
+            }
+    
+    return execute_sql
+
+def create_schema_inspection_tool(schema_info: str):
+    """Create a schema inspection tool for the Agents SDK"""
+    def get_database_schema() -> str:
+        """
+        Get the database schema information.
+        
+        Returns:
+            String containing database schema details
+        """
+        return f"Database Schema:\n{schema_info}"
+    
+    return get_database_schema
+
+@app.post("/agents/query", response_model=AgentQueryResponse)
+def agents_query(req: AgentQueryRequest):
+    """Enhanced agent-based query using OpenAI Agents SDK"""
+    print(f"[DEBUG] /agents/query called. session_id: {req.session_id}")
+    
+    if not AGENTS_SDK_AVAILABLE:
+        return AgentQueryResponse(
+            error="OpenAI Agents SDK not available. Install with: pip install openai-agents", 
+            attempts=0
+        )
+    
+    try:
+        session = get_vanna_session(req.session_id)
+        
+        if not session.get("trained") or not session.get("vn"):
+            return AgentQueryResponse(
+                error="BEAST MODE model not trained. Please call /train first.", 
+                attempts=0
+            )
+        
+        vn = session["vn"]
+        engine = session.get("engine")
+        
+        # Get database schema for context
+        schema_info = ""
+        if engine:
+            try:
+                from sqlalchemy import inspect
+                inspector = inspect(engine)
+                tables = inspector.get_table_names()
+                schema_parts = []
+                for table in tables[:10]:  # Limit to avoid token overflow
+                    columns = inspector.get_columns(table)
+                    col_names = [col['name'] for col in columns]
+                    schema_parts.append(f"Table {table}: {', '.join(col_names)}")
+                schema_info = "\n".join(schema_parts)
+            except Exception as e:
+                print(f"Could not extract schema: {e}")
+                schema_info = "Schema information unavailable"
+        
+        # Create tools for the agent
+        tools = []
+        if engine:
+            tools.append(create_sql_execution_tool(engine, schema_info))
+        tools.append(create_schema_inspection_tool(schema_info))
+        
+        # Create the SQL Expert Agent
+        sql_agent = Agent(
+            name="SQLExpert",
+            instructions=f"""You are an expert SQL query generator and database analyst. Your goal is to:
+
+1. Generate accurate PostgreSQL queries from natural language questions
+2. Execute queries to validate they work correctly  
+3. If a query fails, analyze the error and fix it
+4. Provide helpful analysis of the results
+
+Database Schema:
+{schema_info}
+
+CRITICAL RULES:
+- Always generate complete, valid PostgreSQL syntax
+- Use proper table and column names from the schema
+- Handle NULL values appropriately with NULLIF() where needed
+- For window functions, ensure all parentheses are properly closed
+- For CTEs, ensure all parts are complete with proper SELECT statements
+- Test your SQL by executing it first
+- If execution fails, fix the syntax errors and try again
+- Provide clear analysis of what the query does and what the results mean
+
+Always execute your SQL queries to ensure they work before providing the final answer.""",
+            tools=tools
+        )
+        
+        # Run the agent with the user's question
+        print(f"🤖 Running SQL Agent for question: {req.question}")
+        
+        result = Runner.run_sync(sql_agent, req.question)
+        
+        # Parse the result
+        final_output = result.final_output
+        
+        # Try to extract SQL from the agent's response
+        sql = None
+        if hasattr(result, 'messages'):
+            for message in result.messages:
+                if hasattr(message, 'tool_calls'):
+                    for tool_call in message.tool_calls:
+                        if tool_call.function.name == 'execute_sql':
+                            sql = json.loads(tool_call.function.arguments).get('sql_query')
+                            break
+        
+        # Get the last successful execution result
+        answer = None
+        execution_success = False
+        for message in reversed(result.messages) if hasattr(result, 'messages') else []:
+            if hasattr(message, 'tool_calls'):
+                for tool_call in message.tool_calls:
+                    if tool_call.function.name == 'execute_sql':
+                        try:
+                            args = json.loads(tool_call.function.arguments)
+                            sql = args.get('sql_query')
+                            # Check if this execution was successful by looking at the next message
+                            # (This is a simplified approach - in practice you'd want better result tracking)
+                            execution_success = True
+                            break
+                        except:
+                            pass
+        
+        # Count attempts (simplified - the SDK handles retries internally)
+        attempts = 1
+        if hasattr(result, 'messages'):
+            tool_calls = sum(1 for msg in result.messages 
+                           if hasattr(msg, 'tool_calls') and 
+                           any(tc.function.name == 'execute_sql' for tc in msg.tool_calls))
+            attempts = max(1, tool_calls)
+        
+        return AgentQueryResponse(
+            sql=sql,
+            answer=answer,
+            analysis=final_output,
+            attempts=attempts
+        )
+        
+    except Exception as e:
+        print(f"❌ Error in agents query endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return AgentQueryResponse(
+            error=f"Agent execution failed: {str(e)}", 
+            attempts=1
+        )
+
+# ------------------- Server Startup ------------------- #
+if __name__ == "__main__":
+    import uvicorn
+    print("🔥 Starting BEAST MODE Vanna API Server...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

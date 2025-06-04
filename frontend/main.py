@@ -93,10 +93,19 @@ if page == "🔌 Connect to Database":
         submitted = st.form_submit_button("🔌 Connect")
     
     if submitted:
+        # Validate port input
+        port_value = None
+        if port:
+            if port.isdigit():
+                port_value = int(port)
+            else:
+                st.error(f"Invalid port value: '{port}'. Port must be a number.")
+                st.stop()
+        
         payload = {
             "db_type": db_type,
             "host": host or None,
-            "port": int(port) if port else None,
+            "port": port_value,
             "dbname": dbname or None,
             "username": username or None,
             "password": password or None,
