@@ -4,8 +4,8 @@ services:
   vanna-ai:
     build: .
     ports:
-      - "8000:8000"  # Backend API
-      - "8501:8501"  # Frontend UI
+      - "8080:8000"  # Backend API (8080 external -> 8000 internal)
+      - "8502:8501"  # Frontend UI (8502 external -> 8501 internal)
     environment:
       # Database connection
       DATABASE_PASSWORD: ${DATABASE_PASSWORD}
