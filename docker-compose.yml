@@ -11,9 +11,9 @@ services:
       DATABASE_PASSWORD: ${DATABASE_PASSWORD}
       SESSION_DATABASE_URL: ${SESSION_DATABASE_URL}
       
-      # Qdrant Cloud (already in code, but good to document)
-      QDRANT_URL: "https://c8b537fa-e79e-46e2-8d58-1eacca642f04.eu-west-2-0.aws.cloud.qdrant.io:6333"
-      QDRANT_API_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.G76UJ-39uvZU8q5bg3I3DgJyXfzAjrXWnEA7J_hb4CY"
+      # Qdrant Cloud
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
       
       # Optional: Set Python unbuffered for better logs
       PYTHONUNBUFFERED: "1"

@@ -31,9 +31,16 @@ class BeastModeVannaTrainer(Qdrant_VectorStore, OpenAI_Chat):
         
         # Set up Qdrant Cloud client if not provided
         if 'client' not in config:
+            import os
+            qdrant_url = os.getenv('QDRANT_URL')
+            qdrant_api_key = os.getenv('QDRANT_API_KEY')
+            
+            if not qdrant_url or not qdrant_api_key:
+                raise ValueError("QDRANT_URL and QDRANT_API_KEY environment variables are required")
+                
             config['client'] = QdrantClient(
-                url="https://c8b537fa-e79e-46e2-8d58-1eacca642f04.eu-west-2-0.aws.cloud.qdrant.io:6333",
-                api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.G76UJ-39uvZU8q5bg3I3DgJyXfzAjrXWnEA7J_hb4CY",
+                url=qdrant_url,
+                api_key=qdrant_api_key,
                 timeout=60,
                 prefer_grpc=False
             )
