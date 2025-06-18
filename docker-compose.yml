@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  vanna-ai:
+    build: .
+    ports:
+      - "8000:8000"  # Backend API
+      - "8501:8501"  # Frontend UI
+    environment:
+      # Database connection
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      SESSION_DATABASE_URL: ${SESSION_DATABASE_URL}
+      
+      # Qdrant Cloud (already in code, but good to document)
+      QDRANT_URL: "https://c8b537fa-e79e-46e2-8d58-1eacca642f04.eu-west-2-0.aws.cloud.qdrant.io:6333"
+      QDRANT_API_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.G76UJ-39uvZU8q5bg3I3DgJyXfzAjrXWnEA7J_hb4CY"
+      
+      # Optional: Set Python unbuffered for better logs
+      PYTHONUNBUFFERED: "1"
+    
+    volumes:
+      # Persist model storage and connections
+      - vanna_storage:/app/vanna_storage
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  vanna_storage:
+    driver: local 

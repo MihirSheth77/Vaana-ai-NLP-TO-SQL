@@ -1,5 +1,5 @@
 # Core Vanna AI
-vanna>=0.7.9
+vanna[qdrant,openai,postgres]>=0.7.9
 
 # LLM providers
 openai>=1.1.0
@@ -7,11 +7,13 @@ anthropic>=0.8.0
 
 # Vector database
 chromadb>=0.4.18
+qdrant-client>=1.7.0
 
 # Database connections
 sqlalchemy>=2.0.0
 pymysql>=1.1.0
 psycopg2-binary>=2.9.9
+alembic>=1.13.0
 pyodbc>=5.0.1
 cx_Oracle>=8.3.0
 snowflake-sqlalchemy>=1.4.7

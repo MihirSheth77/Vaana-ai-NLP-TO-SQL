@@ -14,6 +14,7 @@ st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", [
     "🔌 Connect to Database",
     "🧠 Train Model",
+    "🔥 Load Model",
     "❓ Query",
     "🤖 Agentic Query",
     "📚 Add Question to RAG",
@@ -186,7 +187,55 @@ elif page == "🧠 Train Model":
                 else:
                     show_error(resp)
 
-# 3. Query
+# 3. Load Model
+elif page == "🔥 Load Model":
+    st.header("Load Trained Model")
+    
+    if not st.session_state.session_id:
+        st.warning("⚠️ Please connect to a database first.")
+    else:
+        # Show current status
+        status = get_training_status()
+        show_training_status()
+        
+        if not status.get("trained"):
+            st.warning("⚠️ No trained model found. Please train the model first.")
+        elif status.get("model_loaded"):
+            st.success("🎉 Model is already loaded and ready to use!")
+            st.info("You can now go to the Query page to ask questions.")
+        else:
+            st.info("🔥 Your model is trained but needs to be loaded into memory.")
+            st.markdown("**Why do I need to load the model?**")
+            st.markdown("- Your model is safely stored in Qdrant Cloud")
+            st.markdown("- For security, we don't store your OpenAI API key")
+            st.markdown("- Loading requires your API key to initialize the model")
+            
+            with st.form("load_model_form"):
+                openai_api_key = st.text_input("OpenAI API Key", type="password", 
+                                             help="Required to load the trained model into memory")
+                submitted = st.form_submit_button("🔥 Load Model")
+            
+            if submitted:
+                if not openai_api_key:
+                    st.error("OpenAI API Key is required!")
+                else:
+                    payload = {
+                        "session_id": st.session_state.session_id,
+                        "openai_api_key": openai_api_key
+                    }
+                    
+                    with st.spinner("Loading trained model into memory..."):
+                        resp = requests.post(f"{API_URL}/load-model", json=payload)
+                    
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.success(f"✅ {data['message']}")
+                        get_training_status()  # Refresh status
+                        st.rerun()
+                    else:
+                        show_error(resp)
+
+# 4. Query
 elif page == "❓ Query":
     st.header("Query the Database (NLP-to-SQL)")
     
@@ -478,7 +527,7 @@ st.sidebar.markdown("✅ Persistent model storage")
 st.sidebar.markdown("✅ Automatic model reloading")
 st.sidebar.markdown("✅ Smart session management")
 st.sidebar.markdown("✅ Training status tracking")
-st.sidebar.markdown("✅ ChromaDB vector storage")
+st.sidebar.markdown("✅ Qdrant Cloud vector storage")
 
 st.sidebar.markdown("---")
 st.sidebar.info("Developed for Enhanced Vanna NLP-to-SQL API. See /docs for backend API documentation.")

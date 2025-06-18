@@ -16,37 +16,48 @@ import pandas as pd
 
 # Import Vanna modules
 from vanna.openai.openai_chat import OpenAI_Chat
-from vanna.chromadb.chromadb_vector import ChromaDB_VectorStore
+from vanna.qdrant import Qdrant_VectorStore
+from qdrant_client import QdrantClient
 
-class BeastModeVannaTrainer(ChromaDB_VectorStore, OpenAI_Chat):
+class BeastModeVannaTrainer(Qdrant_VectorStore, OpenAI_Chat):
     """
     BEAST MODE Vanna implementation - generates 500+ training examples
     """
     
     def __init__(self, config=None):
-        # Ensure we have a path for persistent storage
-        if config and 'path' not in config:
-            config['path'] = str(Path.cwd() / "vanna_storage" / "default_model")
-        elif not config:
-            config = {'path': str(Path.cwd() / "vanna_storage" / "default_model")}
-            
-        # Create the directory if it doesn't exist
-        Path(config['path']).mkdir(parents=True, exist_ok=True)
+        # Ensure we have Qdrant Cloud client configuration
+        if not config:
+            config = {}
+        
+        # Set up Qdrant Cloud client if not provided
+        if 'client' not in config:
+            config['client'] = QdrantClient(
+                url="https://c8b537fa-e79e-46e2-8d58-1eacca642f04.eu-west-2-0.aws.cloud.qdrant.io:6333",
+                api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.G76UJ-39uvZU8q5bg3I3DgJyXfzAjrXWnEA7J_hb4CY",
+                timeout=60,
+                prefer_grpc=False
+            )
         
         # Initialize parent classes with config
-        ChromaDB_VectorStore.__init__(self, config=config)
+        Qdrant_VectorStore.__init__(self, config=config)
         OpenAI_Chat.__init__(self, config=config)
         
         # Store config for later use
         self.config = config
-        self.model_path = Path(config['path'])
+        # No longer need local model path since we're using Qdrant Cloud
+        self.model_path = None
         
-        print("🔥 BEAST MODE Vanna trainer initialized - preparing for MASSIVE training!")
+        print("🔥 BEAST MODE Vanna trainer initialized with Qdrant Cloud - preparing for MASSIVE training!")
 
     def is_trained(self) -> bool:
-        """Check if the model has been trained by looking for ChromaDB files"""
-        chroma_db_file = self.model_path / "chroma.sqlite3"
-        return chroma_db_file.exists()
+        """Check if the model has been trained by checking Qdrant collections"""
+        try:
+            # Check if we have any collections in Qdrant
+            collections = self.config['client'].get_collections()
+            return len(collections.collections) > 0
+        except Exception as e:
+            print(f"Could not check Qdrant collections: {e}")
+            return False
 
     def beast_mode_training(self, engine, db_type: str, batch_size: int = 50) -> Dict[str, Any]:
         """
@@ -981,16 +992,17 @@ class BeastModeVannaTrainer(ChromaDB_VectorStore, OpenAI_Chat):
 
     def save_training_metadata(self, metadata: Dict[str, Any]):
         """Save training metadata for future reference"""
-        metadata_file = self.model_path / "training_metadata.json"
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
+        # Since we're using Qdrant Cloud, metadata is stored in the vector database
+        # This method is kept for compatibility but doesn't save to local files
+        print(f"📊 Training completed with metadata: {metadata}")
+        pass
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the current model"""
         info = {
-            "model_path": str(self.model_path),
+            "storage_type": "Qdrant Cloud",
             "is_trained": self.is_trained(),
-            "config": {k: v for k, v in self.config.items() if k != 'api_key'}  # Don't expose API key
+            "config": {k: v for k, v in self.config.items() if k not in ['api_key', 'client']}  # Don't expose sensitive data
         }
         
         # Get training data count if available

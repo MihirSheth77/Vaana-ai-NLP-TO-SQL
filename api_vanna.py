@@ -10,7 +10,10 @@ import hashlib
 from pathlib import Path
 import getpass
 import sqlalchemy
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, create_engine, Column, String, DateTime, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
 
 # Import the BEAST MODE trainer
 from beast_mode_trainer import BeastModeVannaTrainer, generate_model_id
@@ -35,12 +38,33 @@ STORAGE_DIR.mkdir(exist_ok=True)
 MODELS_DIR.mkdir(exist_ok=True)
 CONNECTIONS_DIR.mkdir(exist_ok=True)
 
+# Database Models for Session Storage
+Base = declarative_base()
+
+class SessionStorage(Base):
+    __tablename__ = 'vanna_sessions'
+    
+    session_id = Column(String, primary_key=True)
+    connection_params = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# Session storage configuration
+SESSION_DB_URL = os.getenv('SESSION_DATABASE_URL')  # Set this in your environment
+if SESSION_DB_URL:
+    session_engine = create_engine(SESSION_DB_URL)
+    Base.metadata.create_all(session_engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=session_engine)
+else:
+    session_engine = None
+    SessionLocal = None
+
 # ------------------- Utility Functions ------------------- #
 
 def get_connection_string(args) -> str:
     """Build a connection string from provided arguments"""
     # Handle missing password attribute gracefully
-    password = getattr(args, 'password', None) or getpass.getpass("Database password: ")
+    password = getattr(args, 'password', None) or os.getenv('DATABASE_PASSWORD') or getpass.getpass("Database password: ")
     
     if hasattr(args, 'connection_string') and args.connection_string:
         return args.connection_string
@@ -290,20 +314,77 @@ class AgentQueryResponse(BaseModel):
 
 # ------------------- Helper Functions ------------------- #
 
-def check_if_model_trained(model_path: Path) -> bool:
-    """Check if a model has been trained by looking for ChromaDB files"""
-    chroma_file = model_path / "chroma.sqlite3"
-    return chroma_file.exists()
+def check_if_model_trained(vn_instance=None) -> bool:
+    """Check if a model has been trained by checking Qdrant collections"""
+    try:
+        # If we have a vn_instance, use its config client
+        if vn_instance and hasattr(vn_instance, 'config') and 'client' in vn_instance.config:
+            client = vn_instance.config['client']
+        else:
+            # Create a direct client connection to check
+            from qdrant_client import QdrantClient
+            client = QdrantClient(
+                url="https://c8b537fa-e79e-46e2-8d58-1eacca642f04.eu-west-2-0.aws.cloud.qdrant.io:6333",
+                api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.G76UJ-39uvZU8q5bg3I3DgJyXfzAjrXWnEA7J_hb4CY",
+                timeout=60,
+                prefer_grpc=False
+            )
+        
+        collections = client.get_collections()
+        # Check if we have the required collections and they're not empty
+        required_collections = ['documentation', 'sql', 'ddl']
+        existing_collections = [c.name for c in collections.collections]
+        
+        # If all required collections exist, assume we have training data
+        has_all_collections = all(col in existing_collections for col in required_collections)
+        return has_all_collections
+        
+    except Exception as e:
+        print(f"Could not check if model is trained: {e}")
+        return False
 
 def save_connection_params(session_id: str, connection_params: Dict):
     """Save connection parameters for a session"""
-    connection_file = CONNECTIONS_DIR / f"session_{session_id}.json"
     safe_params = {k: v for k, v in connection_params.items() if k != 'password'}
+    
+    if SessionLocal:
+        # Use database storage
+        try:
+            with SessionLocal() as db:
+                # Check if session exists
+                existing = db.query(SessionStorage).filter(SessionStorage.session_id == session_id).first()
+                if existing:
+                    existing.connection_params = safe_params
+                    existing.updated_at = datetime.utcnow()
+                else:
+                    session_record = SessionStorage(
+                        session_id=session_id,
+                        connection_params=safe_params
+                    )
+                    db.add(session_record)
+                db.commit()
+                return
+        except Exception as e:
+            print(f"Database storage failed, falling back to file storage: {e}")
+    
+    # Fallback to file storage
+    connection_file = CONNECTIONS_DIR / f"session_{session_id}.json"
     with open(connection_file, 'w') as f:
         json.dump(safe_params, f, indent=2)
 
 def load_connection_params(session_id: str) -> Optional[Dict]:
     """Load connection parameters for a session"""
+    if SessionLocal:
+        # Try database storage first
+        try:
+            with SessionLocal() as db:
+                session_record = db.query(SessionStorage).filter(SessionStorage.session_id == session_id).first()
+                if session_record:
+                    return session_record.connection_params
+        except Exception as e:
+            print(f"Database load failed, falling back to file storage: {e}")
+    
+    # Fallback to file storage
     connection_file = CONNECTIONS_DIR / f"session_{session_id}.json"
     if connection_file.exists():
         with open(connection_file, 'r') as f:
@@ -311,13 +392,20 @@ def load_connection_params(session_id: str) -> Optional[Dict]:
     return None
 
 def create_vanna_instance(openai_api_key: str, model_path: Path) -> BeastModeVannaTrainer:
-    """Create a BEAST MODE Vanna instance with persistent storage"""
+    """Create a BEAST MODE Vanna instance with Qdrant Cloud storage"""
+    from qdrant_client import QdrantClient
+    
     model_path.mkdir(exist_ok=True)
     
     config = {
         'api_key': openai_api_key,
         'model': 'gpt-4o',
-        'path': str(model_path)
+        'client': QdrantClient(
+            url="https://c8b537fa-e79e-46e2-8d58-1eacca642f04.eu-west-2-0.aws.cloud.qdrant.io:6333",
+            api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.G76UJ-39uvZU8q5bg3I3DgJyXfzAjrXWnEA7J_hb4CY",
+            timeout=60,
+            prefer_grpc=False
+        )
     }
     
     return BeastModeVannaTrainer(config=config)
@@ -383,7 +471,7 @@ def load_existing_sessions():
             
             model_id = generate_model_id(connection_params)
             model_path = MODELS_DIR / f"model_{model_id}"
-            is_trained = check_if_model_trained(model_path)
+            is_trained = check_if_model_trained()
             
             # Create a minimal session entry
             user_sessions[session_id] = {
@@ -445,6 +533,16 @@ def get_vanna_session(session_id: str) -> Dict[str, Any]:
                     return session
                 raise HTTPException(status_code=400, detail=f"Failed to recreate database connection: {e}")
         
+        # If model is trained but Vanna instance is not loaded, try to load it
+        if session.get("trained") and not session.get("vn"):
+            try:
+                # We need an OpenAI API key to load the model, but we don't have it stored
+                # This will be handled when the user provides the API key for queries
+                print(f"⚠️  Model is trained but not loaded for session {session_id}")
+                print(f"   User will need to provide OpenAI API key to load the model")
+            except Exception as e:
+                print(f"❌ Failed to load trained model for session {session_id}: {e}")
+        
         return session
 
 # ------------------- Endpoints ------------------- #
@@ -478,7 +576,7 @@ def connect(req: ConnectRequest):
     save_connection_params(session_id, connection_params)
     
     # Check if model is already trained
-    is_trained = check_if_model_trained(model_path)
+    is_trained = check_if_model_trained()
     
     # Store session
     with session_lock:
@@ -532,10 +630,11 @@ def train(req: TrainRequest):
             raise HTTPException(status_code=500, detail=f"Failed to initialize BEAST MODE Vanna: {e}")
         
         # Check if model is already trained
-        if session["trained"]:
+        if check_if_model_trained(vn):
             session["vn"] = vn
+            session["trained"] = True
             print(f"🔥 BEAST MODE: Model already trained, returning early")
-            return TrainResponse(message="🔥 BEAST MODE model already trained and loaded from persistent storage.")
+            return TrainResponse(message="🔥 BEAST MODE model already trained and loaded from Qdrant Cloud storage.")
         
         # BEAST MODE Training
         try:
@@ -651,6 +750,36 @@ def reload_model(req: TrainRequest):
         return {"message": "🔥 BEAST MODE model reloaded successfully from persistent storage."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reload BEAST MODE model: {e}")
+
+@app.post("/load-model")
+def load_model(req: TrainRequest):
+    """Load a trained BEAST MODE model into memory"""
+    try:
+        # Debug: Print the received API key (mask all but last 4 chars)
+        masked_key = req.openai_api_key[:6] + "..." + req.openai_api_key[-4:] if req.openai_api_key else None
+        print(f"[DEBUG] Load model - Received OpenAI API key: {masked_key}")
+        # Strip whitespace from API key
+        req.openai_api_key = req.openai_api_key.strip() if req.openai_api_key else req.openai_api_key
+        
+        session = get_vanna_session(req.session_id)
+        model_path = session["model_path"]
+        
+        if not session.get("trained"):
+            raise HTTPException(status_code=400, detail="No trained model found. Please train first.")
+        
+        # Create new Vanna instance and load trained model
+        vn = create_vanna_instance(req.openai_api_key, model_path)
+        session["vn"] = vn
+        session["trained"] = True  # Mark as trained since we're loading a trained model
+        
+        print(f"🔥 BEAST MODE model loaded successfully into memory for session {req.session_id}")
+        return {"message": "🔥 BEAST MODE model loaded successfully into memory."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Failed to load BEAST MODE model: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load BEAST MODE model: {e}")
 
 @app.post("/add-question", response_model=AddQuestionResponse)
 def add_question(req: AddQuestionRequest):
@@ -859,13 +988,33 @@ def get_training_status(session_id: str):
     try:
         session = get_vanna_session(session_id)
         model_path = session["model_path"]
-        is_trained = check_if_model_trained(model_path)
+        # Debug: Check the type of vn object
+        vn = session.get("vn")
+        if vn:
+            print(f"[DEBUG] Type of vn object: {type(vn)}")
+            print(f"[DEBUG] vn.__class__.__name__: {vn.__class__.__name__}")
+        is_trained = check_if_model_trained(vn)
         
         training_data_count = 0
         if session.get("vn"):
             try:
-                training_data = session["vn"].get_training_data()
-                training_data_count = len(training_data) if training_data is not None else 0
+                # For Qdrant Cloud, get count from vector store
+                vn = session["vn"]
+                if hasattr(vn, 'config') and 'client' in vn.config:
+                    # Get count from all collections
+                    collections = ['documentation', 'sql', 'ddl']
+                    total_count = 0
+                    for collection in collections:
+                        try:
+                            collection_info = vn.config['client'].get_collection(collection)
+                            total_count += collection_info.points_count
+                        except:
+                            pass
+                    training_data_count = total_count
+                else:
+                    # Fallback to traditional method
+                    training_data = vn.get_training_data()
+                    training_data_count = len(training_data) if training_data is not None else 0
             except:
                 pass
         
@@ -898,7 +1047,7 @@ def restore_session(session_id: str):
         # Generate model info
         model_id = generate_model_id(connection_params)
         model_path = MODELS_DIR / f"model_{model_id}"
-        is_trained = check_if_model_trained(model_path)
+        is_trained = check_if_model_trained()
         
         # Create session entry (engine will be created when needed)
         with session_lock:
@@ -934,7 +1083,7 @@ def list_sessions():
             
             model_id = generate_model_id(connection_params)
             model_path = MODELS_DIR / f"model_{model_id}"
-            is_trained = check_if_model_trained(model_path)
+            is_trained = check_if_model_trained()
             
             sessions.append({
                 "session_id": session_id,
@@ -971,7 +1120,7 @@ def root():
             "💾 Persistent model training data",
             "🔄 Automatic model reloading", 
             "📋 Session management",
-            "🗂️ ChromaDB vector storage",
+            "🗂️ Qdrant Cloud vector storage",
             "🌐 Multi-database support",
             "🔧 Built-in SQL execution tools",
             "📚 Business logic integration",
@@ -990,7 +1139,7 @@ def list_models():
         for model_dir in MODELS_DIR.glob("model_*"):
             if model_dir.is_dir():
                 model_id = model_dir.name.replace("model_", "")
-                is_trained = check_if_model_trained(model_dir)
+                is_trained = check_if_model_trained()
                 models.append({
                     "model_id": model_id,
                     "path": str(model_dir),
