@@ -11,6 +11,8 @@ services:
     depends_on:
       - vanna-ai
     restart: unless-stopped
+    labels:
+      - "coolify.port=8082"
 
   vanna-ai:
     build: .
