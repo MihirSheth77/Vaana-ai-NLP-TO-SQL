@@ -5,9 +5,9 @@ services:
     build: .
     ports:
       - "9000:8000"  # Backend API (9000 external -> 8000 internal)
-      - "9001:8501"  # Frontend UI (9001 external -> 8501 internal)
+      - "80:8501"    # Frontend UI (80 external -> 8501 internal)
     labels:
-      - "coolify.port=9001"  # Tell Coolify to proxy to the exposed frontend port
+      - "coolify.port=80"  # Tell Coolify to proxy to the standard HTTP port
     environment:
       # Database connection
       DATABASE_PASSWORD: ${DATABASE_PASSWORD}
